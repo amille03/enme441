@@ -7,9 +7,9 @@ DATA_PIN  = 14     # serial (DS)
 CLOCK_PIN = 15     # clock (SHCP)
 LATCH_PIN = 18     # latch (STCP)
 
-S1_PIN = 2        # on/off
-S2_PIN = 3        # wrap toggle
-S3_PIN = 4        # speed x3
+S1_PIN = 17        # on/off
+S2_PIN = 27        # wrap toggle
+S3_PIN = 22        # speed x3
 # ------------------------------------------
 
 def main():
