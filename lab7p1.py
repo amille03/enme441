@@ -72,8 +72,6 @@ class Handler(BaseHTTPRequestHandler):
   <hr>
   <div><em>Current levels</em></div>
   <div>LED1: {levels[0]}% | LED2: {levels[1]}% | LED3: {levels[2]}%</div>
-</div>
-<p><a href="/v2">Looking for the JS version? (use problem2_rpi.py)</a></p>
 </body></html>"""
 
 if __name__ == "__main__":
