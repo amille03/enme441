@@ -3,8 +3,12 @@
 import time, RPi.GPIO as GPIO
 
 # BCM pins -> L293D IN1..IN4
-PIN_IN1, PIN_IN2, PIN_IN3, PIN_IN4 = 17, 27, 22, 23
-PIN_EN12, PIN_EN34 = None, None   # set to GPIO numbers if you wired EN pins
+PIN_IN1 = 17
+PIN_IN2 = 27
+PIN_IN3 = 22
+PIN_IN4 = 23
+PIN_EN12 = None
+PIN_EN34 = None  # set to GPIO numbers if you wired EN pins
 
 # 28BYJ-48 ~2048 full-steps/rev (two-phase full-step on output shaft)
 FULLSTEPS_PER_REV = 2048
