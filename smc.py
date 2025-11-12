@@ -26,8 +26,9 @@ def _norm_shortest_delta(target_deg, current_deg):
         d -= 360.0
     return d
 
-# shared 8-bit output image for ALL motors (for simultaneous operation)
-GLOBAL_OUT = mp.Value('B', 0)   # unsigned char 0–255
+# Shared 8-bit output image and lock for ALL motors
+SHIFT_BYTE = mp.Value('b', 0)   # signed char 0–255
+SHIFT_LOCK = mp.Lock()
 
 # ---------- 74HC595 SHIFTER ----------
 
@@ -45,24 +46,26 @@ class Shifter:
         sleep(0)
         GPIO.output(p, 0)
 
-    # Shift all bits in an arbitrary-length word, allowing
-    # multiple 8-bit shift registers to be chained:
     def shiftWord(self, dataword, num_bits):
         # pad to full byte boundary with zeros:
         pad_bits = (8 - (num_bits % 8)) % 8
         for _ in range(pad_bits):
             GPIO.output(self.dataPin, 0)
             self.ping(self.clockPin)
+
         # now shift the actual bits, LSB first
         for i in range(num_bits):
             bit = 1 if (dataword & (1 << i)) else 0
             GPIO.output(self.dataPin, bit)
             self.ping(self.clockPin)
+
+        # latch once at the end
         self.ping(self.latchPin)
 
     # Shift all bits in a single byte:
     def shiftByte(self, databyte):
         self.shiftWord(databyte, 8)
+
 
 # ---------- STEPPER CLASS USING SHIFTER ----------
 
@@ -86,17 +89,14 @@ class Stepper:
         seq_len = len(_FULL_STEP)
         pattern4 = _FULL_STEP[phase_idx % seq_len]  # 4-bit pattern for this motor
 
-        # update only our nibble inside GLOBAL_OUT, protecting with a lock
-        with GLOBAL_OUT.get_lock():
-            byte = GLOBAL_OUT.value
-            mask = 0x0F << self.bit_offset      # mask for our 4 bits
-            byte &= ~mask                       # clear our bits
+        # Modify ONLY our nibble inside SHIFT_BYTE
+        with SHIFT_LOCK:
+            byte = SHIFT_BYTE.value
+            mask = 0x0F << self.bit_offset   # mask for our 4 bits
+            byte &= ~mask                    # clear our bits
             byte |= (pattern4 & 0x0F) << self.bit_offset
-            GLOBAL_OUT.value = byte
-            out_byte = byte
-
-        # actually shift the combined pattern to the 74HC595
-        self.s.shiftByte(out_byte)
+            SHIFT_BYTE.value = byte
+            self.s.shiftByte(byte)
 
         with self.phase.get_lock():
             self.phase.value = phase_idx % seq_len
@@ -118,27 +118,24 @@ class Stepper:
                     self.angle_deg.value + direction * STEP_ANGLE_DEG
                 ) % 360.0
 
-        # de-energize ONLY this motor's coils (leave other motor running)
-        with GLOBAL_OUT.get_lock():
-            byte = GLOBAL_OUT.value
+        # de-energize ONLY this motor's coils, leave the other motor running
+        with SHIFT_LOCK:
+            byte = SHIFT_BYTE.value
             mask = 0x0F << self.bit_offset
-            byte &= ~mask         # clear our nibble
-            GLOBAL_OUT.value = byte
-        self.s.shiftByte(byte)
+            byte &= ~mask
+            SHIFT_BYTE.value = byte
+            self.s.shiftByte(byte)
 
     # ---- public APIs ----
-    def rotate(self, degrees, speed_hz=400):
+    def rotate(self, degrees, speed_hz=200):
         """
         Rotate relative by 'degrees' (positive = forward),
         speed_hz controls step timing (higher = faster).
 
-        IMPORTANT: this spawns a separate process and returns immediately,
-        so two calls like
-
+        Two calls such as:
             m1.rotate(90)
             m2.rotate(-90)
-
-        will cause both motors to move simultaneously.
+        will run in parallel because each spawns its own process.
         """
         direction = 1 if degrees >= 0 else -1
         steps = int(round(abs(degrees) / STEP_ANGLE_DEG))
@@ -148,11 +145,11 @@ class Stepper:
         p.start()
         return p  # caller can join() if desired
 
-    def goAngle(self, target_deg, speed_hz=400):
+    def goAngle(self, target_deg, speed_hz=200):
         """
         Absolute move to 'target_deg' (0..360), following the SHORTEST path.
         Uses self.angle_deg (a multiprocessing.Value) so angle is shared across
-        processes, as required.
+        processes, as required by the lab.
         """
         with self.angle_deg.get_lock():
             cur = self.angle_deg.value % 360.0
@@ -163,6 +160,7 @@ class Stepper:
         """Set logical angle to zero (does not move)."""
         with self.angle_deg.get_lock():
             self.angle_deg.value = 0.0
+
 
 # ---------------- demo / lab harness ----------------
 if __name__ == "__main__":
@@ -177,28 +175,24 @@ if __name__ == "__main__":
     s = Shifter(DATA, CLK, LATCH)
 
     # Motor 1 on QA..QD (bits 0..3), Motor 2 on QE..QH (bits 4..7)
-    m1 = Stepper(s, bit_offset=0, step_delay=0.002)
-    m2 = Stepper(s, bit_offset=4, step_delay=0.002)
+    m1 = Stepper(s, bit_offset=0, step_delay=0.004)  # slightly slower for reliability
+    m2 = Stepper(s, bit_offset=4, step_delay=0.004)
 
-    # --- demo matching the lab instructions conceptually ---
+    # Lab sequence (each pair should run simultaneously)
+    m1.zero(); m2.zero()
 
-    m1.zero()
-    m2.zero()
-
-    # example pair: both move simultaneously
     p1 = m1.goAngle(90)
-    p2 = m2.goAngle(-90)
+    p2 = m2.goAngle(-45)
     p1.join(); p2.join()
 
-    p1 = m1.goAngle(-45)
+    p1 = m2.goAngle(-90)
     p2 = m2.goAngle(45)
     p1.join(); p2.join()
 
     p1 = m1.goAngle(-135)
-    p2 = m2.goAngle(135)
+    p2 = m1.goAngle(135)
     p1.join(); p2.join()
 
-    # home motor 1
     p = m1.goAngle(0)
     p.join()
 
