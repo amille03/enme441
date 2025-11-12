@@ -156,26 +156,17 @@ if __name__ == "__main__":
     m1 = Stepper(s, bit_offset=0)
     m2 = Stepper(s, bit_offset=4)
 
-    m1.zero(); m2.zero()
-
-    # ---- PART 1: both motors move together ----
-    p1 = m1.goAngle(90)
-    p2 = m2.goAngle(-90)
-    p1.join(); p2.join()
-
-    # ---- PART 2: next pair of moves, still simultaneous ----
-    p1 = m1.goAngle(-45)   # from +90 to -45 (via shortest path)
-    p2 = m2.goAngle(45)    # from -90 to +45
-    p1.join(); p2.join()
-
-    # ---- PART 3: final pair of moves, still simultaneous ----
-    p1 = m1.goAngle(-135)
-    p2 = m2.goAngle(135)
-    p1.join(); p2.join()
-
-    # home both
-    p1 = m1.goAngle(0)
-    p2 = m2.goAngle(0)
-    p1.join(); p2.join()
+    m1.zero()
+    m2.zero()
+    
+    m1.goAngle(90)
+    m1.goAngle(-45)
+    
+    m2.goAngle(-90)
+    m2.goAngle(45)
+    
+    m1.goAngle(-135)
+    m1.goAngle(135)
+    m1.goAngle(0)
 
     GPIO.cleanup()
