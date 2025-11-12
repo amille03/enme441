@@ -1,25 +1,41 @@
 #!/usr/bin/env python3
-# Test 28BYJ-48 stepper via L293D on Raspberry Pi Zero 2 W
+# step_l293d.py — Drive 28BYJ-48 via L293D on Raspberry Pi (Zero 2 W)
+# Works for unipolar hookup: red wire to +5V; coils on OUT1..OUT4.
+# IMPORTANT: L293D sinks current -> output LOW energizes a coil.
 
 import time
-import math
 import RPi.GPIO as GPIO
 
-# ========= Pin map (BCM) =========
+# ================= User config (BCM numbering) =================
+# Pi GPIOs to L293D inputs IN1..IN4 (pins 2,7,10,15 on the L293D)
 PIN_IN1 = 17
 PIN_IN2 = 27
 PIN_IN3 = 22
 PIN_IN4 = 23
 
-# If you wired EN pins to GPIO, set these; otherwise set to None and tie them HIGH on the board
-PIN_EN12 = None   # L293D EN1,2 (pin 1)
-PIN_EN34 = None   # L293D EN3,4 (pin 9)
+# If EN1,2 (pin1) and EN3,4 (pin9) are wired to GPIO, set pins here.
+# If they are tied HIGH on the board, set these to None.
+PIN_EN12 = None  # e.g., 24
+PIN_EN34 = None  # e.g., 25
 
-# ========= Motor constants =========
-# 28BYJ-48 typically ~4096 half-steps per output shaft revolution (gearbox)
+# 28BYJ-48 color → which L293D OUTPUT it is on (for your sanity)
+# OUT1→Blue, OUT2→Pink, OUT3→Yellow, OUT4→Orange is typical.
+COLOR_MAP = {
+    "Blue"   : "OUT1",
+    "Pink"   : "OUT2",
+    "Yellow" : "OUT3",
+    "Orange" : "OUT4",
+    "Red"    : "+5V (common)"
+}
+
+# Steps/rev of 28BYJ-48 gearbox (half-step)
 HALFSTEPS_PER_REV = 4096
 
-# Half-step sequence: energize one or two coils at a time
+# Set how long each half-step lasts initially (slower is safer to start)
+START_RPM = 8.0
+# ===============================================================
+
+# Half-step pattern: 1 means "energize this coil"
 HALFSTEP_SEQ = [
     (1,0,0,0),
     (1,1,0,0),
@@ -31,74 +47,95 @@ HALFSTEP_SEQ = [
     (1,0,0,1),
 ]
 
+# Because the L293D sinks current, "energize" == drive LOW.
+# We'll translate 1→LOW and 0→HIGH before writing to pins.
+def write_coils(a,b,c,d):
+    GPIO.output(PIN_IN1, GPIO.LOW if a else GPIO.HIGH)
+    GPIO.output(PIN_IN2, GPIO.LOW if b else GPIO.HIGH)
+    GPIO.output(PIN_IN3, GPIO.LOW if c else GPIO.HIGH)
+    GPIO.output(PIN_IN4, GPIO.LOW if d else GPIO.HIGH)
+
+def release():
+    # De-energize all coils (outputs HIGH)
+    write_coils(0,0,0,0)
+
+def rpm_to_delay(rpm):
+    rpm = max(0.1, float(rpm))
+    sec_per_rev = 60.0 / rpm
+    return sec_per_rev / HALFSTEPS_PER_REV  # seconds per half-step
+
 def setup():
     GPIO.setmode(GPIO.BCM)
     for p in (PIN_IN1, PIN_IN2, PIN_IN3, PIN_IN4):
-        GPIO.setup(p, GPIO.OUT, initial=GPIO.LOW)
-
+        GPIO.setup(p, GPIO.OUT, initial=GPIO.HIGH)  # HIGH = off (see note)
     if PIN_EN12 is not None:
         GPIO.setup(PIN_EN12, GPIO.OUT, initial=GPIO.HIGH)
     if PIN_EN34 is not None:
         GPIO.setup(PIN_EN34, GPIO.OUT, initial=GPIO.HIGH)
 
-def set_coils(a, b, c, d):
-    GPIO.output(PIN_IN1, GPIO.HIGH if a else GPIO.LOW)
-    GPIO.output(PIN_IN2, GPIO.HIGH if b else GPIO.LOW)
-    GPIO.output(PIN_IN3, GPIO.HIGH if c else GPIO.LOW)
-    GPIO.output(PIN_IN4, GPIO.HIGH if d else GPIO.LOW)
-
-def release():
-    set_coils(0,0,0,0)
-
-def step_once(index, direction=1, delay_s=0.001):
-    """Perform one half-step and return next index."""
-    index = (index + direction) % 8
-    set_coils(*HALFSTEP_SEQ[index])
-    time.sleep(delay_s)
-    return index
-
-def run_steps(n_steps, rpm=10.0, direction=1):
+def coil_self_test(dwell=1.0):
     """
-    Run given number of half-steps at target RPM of the output shaft.
-    direction: +1 (CW) or -1 (CCW)
+    Slowly energize each individual coil so you can confirm wiring.
+    You should feel/see the rotor 'twitch' to four distinct holding positions.
     """
-    # time per half-step based on desired shaft RPM
-    sec_per_rev = 60.0 / max(rpm, 0.1)
-    delay_s = sec_per_rev / HALFSTEPS_PER_REV
+    print("Coil self-test: energizing one coil at a time...")
+    names = ["Blue (OUT1)","Pink (OUT2)","Yellow (OUT3)","Orange (OUT4)"]
+    patterns = [(1,0,0,0),(0,1,0,0),(0,0,1,0),(0,0,0,1)]
+    for name, patt in zip(names, patterns):
+        print("  ->", name)
+        write_coils(*patt)
+        time.sleep(dwell)
+        release()
+        time.sleep(0.3)
+    print("Self-test done.\n")
 
+def step_n(n_steps, rpm=START_RPM, cw=True):
+    delay = rpm_to_delay(rpm)
     idx = 0
-    for _ in range(abs(int(n_steps))):
-        idx = step_once(idx, direction=1 if direction >= 0 else -1, delay_s=delay_s)
+    direction = 1 if cw else -1
+    rng = range(abs(int(n_steps)))
+    for _ in rng:
+        idx = (idx + direction) % 8
+        write_coils(*HALFSTEP_SEQ[idx])
+        time.sleep(delay)
+    release()
 
-def move_degrees(deg, rpm=10.0):
-    """Move the shaft by a signed number of degrees."""
+def move_degrees(deg, rpm=START_RPM):
     steps = int(round((deg / 360.0) * HALFSTEPS_PER_REV))
-    direction = 1 if steps >= 0 else -1
-    run_steps(abs(steps), rpm=rpm, direction=direction)
+    cw = steps >= 0
+    step_n(abs(steps), rpm=rpm, cw=cw)
 
 def demo():
-    print("L293D 28BYJ-48 test: 1 rev CW, pause, 1 rev CCW, then 90° steps.")
-    # 1 revolution CW
-    run_steps(HALFSTEPS_PER_REV, rpm=12.0, direction=1)
+    print("\n=== L293D + 28BYJ-48 demo ===")
+    print("Mapping:", COLOR_MAP, "\n")
+    coil_self_test(dwell=0.8)
+
+    print("1 rev CW @ slow RPM...")
+    step_n(HALFSTEPS_PER_REV, rpm=6.0, cw=True)
     time.sleep(0.5)
-    # 1 revolution CCW
-    run_steps(HALFSTEPS_PER_REV, rpm=12.0, direction=-1)
+
+    print("1 rev CCW @ slow RPM...")
+    step_n(HALFSTEPS_PER_REV, rpm=6.0, cw=False)
     time.sleep(0.5)
-    # Nudge tests
+
+    print("Quarter-turn nudges (CW)...")
     for _ in range(4):
-        move_degrees(90, rpm=15.0)
+        move_degrees(90, rpm=10.0)
         time.sleep(0.3)
+
+    print("Quarter-turn nudges (CCW)...")
     for _ in range(4):
-        move_degrees(-90, rpm=15.0)
+        move_degrees(-90, rpm=10.0)
         time.sleep(0.3)
 
 if __name__ == "__main__":
     try:
         setup()
         demo()
+        print("Done.")
     except KeyboardInterrupt:
         pass
     finally:
         release()
         GPIO.cleanup()
-        print("Clean exit.")
+        print("GPIO cleaned up.")
