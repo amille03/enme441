@@ -1,164 +1,181 @@
 #!/usr/bin/env python3
-import multiprocessing as mp
+
 import time
+import multiprocessing as mp
 from RPi import GPIO
 from time import sleep
 
-GPIO.setmode(GPIO.BCM)
+# 4 full-step coil patterns, LSB..MSB = coils 1..4 (two-phase-on)
+_FULL_STEP = [
+    0b0011,  # 1+2
+    0b0110,  # 2+3
+    0b1100,  # 3+4
+    0b1001,  # 4+1
+]
 
-# ---------------- SHIFTER ----------------
+# 28BYJ-48, full-step effective output shaft angle (2048 steps/rev)
+STEP_ANGLE_DEG = 360.0 / 2048.0
+
+def _norm_shortest_delta(target_deg, current_deg):
+    """Return signed shortest delta in degrees in (-180, 180]."""
+    d = (target_deg - current_deg) % 360.0
+    if d > 180.0:
+        d -= 360.0
+    return d
+
+# Shared 8-bit shift-register image and lock (for BOTH motors)
+SHIFT_BYTE = mp.Value('B', 0)   # unsigned char
+SHIFT_LOCK = mp.Lock()
+
+# ---------- 74HC595 SHIFTER ----------
+
 class Shifter:
     def __init__(self, data, clock, latch):
         self.dataPin = data
-        self.clockPin = clock
         self.latchPin = latch
-        GPIO.setup(data, GPIO.OUT)
-        GPIO.setup(clock, GPIO.OUT)
-        GPIO.setup(latch, GPIO.OUT)
+        self.clockPin = clock
+        GPIO.setup(self.dataPin, GPIO.OUT)
+        GPIO.setup(self.latchPin, GPIO.OUT)
+        GPIO.setup(self.clockPin, GPIO.OUT)
 
-    def pulse(self, pin):
-        GPIO.output(pin, 1)
+    def ping(self, p):
+        GPIO.output(p, 1)
         sleep(0)
-        GPIO.output(pin, 0)
+        GPIO.output(p, 0)
 
-    def shiftByte(self, value):
-        """MSB FIRST — REQUIRED for 74HC595 on Raspberry Pi"""
-        # Begin sending bits
-        for i in range(7, -1, -1):      # MSB → LSB
-            GPIO.output(self.dataPin, (value >> i) & 1)
-            self.pulse(self.clockPin)
+    def shiftWord(self, dataword, num_bits):
+        pad_bits = (8 - (num_bits % 8)) % 8
+        for _ in range(pad_bits):
+            GPIO.output(self.dataPin, 0)
+            self.ping(self.clockPin)
 
-        self.pulse(self.latchPin)
+        for i in range(num_bits):       # LSB first
+            bit = 1 if (dataword & (1 << i)) else 0
+            GPIO.output(self.dataPin, bit)
+            self.ping(self.clockPin)
 
+        self.ping(self.latchPin)
 
-# -------------- GLOBAL SHIFT REGISTER BYTE --------------
-SR_STATE = mp.Value('i', 0, lock=True)
+    def shiftByte(self, databyte):
+        self.shiftWord(databyte, 8)
 
-# Two-phase-on full-step pattern
-FULLSTEP = [
-    0b0011,
-    0b0110,
-    0b1100,
-    0b1001
-]
+# ---------- STEPPER CLASS USING SHIFTER ----------
 
-STEPS_PER_REV = 200
-DEG_PER_STEP = 360 / STEPS_PER_REV
-
-
-# ---------------- STEPPER CLASS ----------------
 class Stepper:
-    def __init__(self, sh, base_bit):
-        self.sh = sh
-        self.base_bit = base_bit       # 0 for motor1, 4 for motor2
-        self.mask = 0b1111 << base_bit
+    def __init__(self, shifter, bit_offset=0, step_delay=0.003):
+        """
+        shifter: shared Shifter instance (drives the 74HC595)
+        bit_offset: 0 for QA..QD, 4 for QE..QH
+        step_delay: seconds between full-steps (speed control)
+        """
+        self.s = shifter
+        self.bit_offset = bit_offset
+        self.step_delay = step_delay
+        self.angle_deg = mp.Value('d', 0.0)  # shared angle
+        self.phase = mp.Value('i', 0)        # shared index into _FULL_STEP
 
-        self.index = 0
-        self.angle = mp.Value('d', 0.0)
+    # write this motor's nibble into the shared 8-bit value
+    def _write_phase(self, phase_idx):
+        seq_len = len(_FULL_STEP)
+        pattern4 = _FULL_STEP[phase_idx % seq_len]
 
-        self.step_delay = 0.02         # ✅ slightly slower
+        with SHIFT_LOCK:
+            byte = SHIFT_BYTE.value
+            mask = 0x0F << self.bit_offset
+            byte &= ~mask                           # clear our bits
+            byte |= (pattern4 & 0x0F) << self.bit_offset
+            SHIFT_BYTE.value = byte
+            self.s.shiftByte(byte)
 
-        self.proc = None
+        with self.phase.get_lock():
+            self.phase.value = phase_idx % seq_len
 
-    def _apply(self, pattern):
-        with SR_STATE.get_lock():
-            old = SR_STATE.value & (~self.mask)
-            new = old | ((pattern << self.base_bit) & self.mask)
-            SR_STATE.value = new
-            self.sh.shiftByte(new)
+    def _step_worker(self, steps, direction, step_delay):
+        seq_len = len(_FULL_STEP)
+        with self.phase.get_lock():
+            idx = self.phase.value
 
-    def _one_step(self, direction):
-        if direction > 0:
-            self.index = (self.index + 1) % 4
-        else:
-            self.index = (self.index - 1) % 4
+        for _ in range(abs(steps)):
+            idx = (idx + (1 if direction > 0 else -1)) % seq_len
+            self._write_phase(idx)
+            time.sleep(step_delay)
+            with self.angle_deg.get_lock():
+                self.angle_deg.value = (
+                    self.angle_deg.value + direction * STEP_ANGLE_DEG
+                ) % 360.0
 
-        pattern = FULLSTEP[self.index]
-        self._apply(pattern)
+        # de-energize only this motor's coils
+        with SHIFT_LOCK:
+            byte = SHIFT_BYTE.value
+            mask = 0x0F << self.bit_offset
+            byte &= ~mask
+            SHIFT_BYTE.value = byte
+            self.s.shiftByte(byte)
 
-        with self.angle.get_lock():
-            self.angle.value = (self.angle.value + direction * DEG_PER_STEP) % 360
+    # ---- public APIs ----
+    def rotate(self, degrees, speed_hz=200):
+        """
+        Rotate relative by 'degrees'. This spawns a new process and returns it.
+        If you call:
 
-    def _run(self, steps, direction):
-        for _ in range(steps):
-            self._one_step(direction)
-            sleep(self.step_delay)
+            p1 = m1.rotate(90)
+            p2 = m2.rotate(-90)
 
-    def goAngle(self, deg):
-        if self.proc:
-            self.proc.join()
+        both motors run at the same time until you join the processes.
+        """
+        direction = 1 if degrees >= 0 else -1
+        steps = int(round(abs(degrees) / STEP_ANGLE_DEG))
+        step_delay = max(1.0 / float(speed_hz), self.step_delay)
+        p = mp.Process(target=self._step_worker,
+                       args=(steps, direction, step_delay))
+        p.start()
+        return p
 
-        with self.angle.get_lock():
-            cur = self.angle.value % 360
-        tgt = deg % 360
-
-        delta = (tgt - cur) % 360
-        if delta > 180:
-            delta -= 360
-
-        if abs(delta) < 1e-6:
-            return
-
-        direction = 1 if delta > 0 else -1
-        steps = int(round(abs(delta) / DEG_PER_STEP))
-
-        self.proc = mp.Process(target=self._run, args=(steps, direction))
-        self.proc.start()
+    def goAngle(self, target_deg, speed_hz=200):
+        """Absolute move using SHORTEST path to target_deg."""
+        with self.angle_deg.get_lock():
+            cur = self.angle_deg.value % 360.0
+        delta = _norm_shortest_delta(target_deg % 360.0, cur)
+        return self.rotate(delta, speed_hz)
 
     def zero(self):
-        if self.proc:
-            self.proc.join()
-        with self.angle.get_lock():
-            self.angle.value = 0
+        with self.angle_deg.get_lock():
+            self.angle_deg.value = 0.0
 
-    def wait(self):
-        if self.proc:
-            self.proc.join()
-            self.proc = None
-
-
-# ---------------- MAIN ----------------
-def main():
-    # Enable pins
-    for p in (17, 22, 23):
-        GPIO.setup(p, GPIO.OUT)
-        GPIO.output(p, GPIO.HIGH)
-
-    sh = Shifter(data=16, clock=20, latch=21)
-
-    m1 = Stepper(sh, base_bit=0)   # bits 0–3
-    m2 = Stepper(sh, base_bit=4)   # bits 4–7
-
-    try:
-        # Exact lab sequence
-        m1.zero()
-        m2.zero()
-
-        m1.goAngle(90)
-        m2.goAngle(-45)
-        m1.wait()
-        m2.wait()
-
-        m2.goAngle(-90)
-        m1.goAngle(45)
-        m1.wait()
-        m2.wait()
-
-        m1.goAngle(-135)
-        m1.wait()
-
-        m1.goAngle(135)
-        m1.wait()
-
-        m1.goAngle(0)
-        m1.wait()
-
-    finally:
-        with SR_STATE.get_lock():
-            SR_STATE.value = 0
-        sh.shiftByte(0)
-        GPIO.cleanup()
-
-
+# ---------------- demo / lab harness ----------------
 if __name__ == "__main__":
-    main()
+    GPIO.setmode(GPIO.BCM)
+
+    # Tie EN pins high (adjust if yours differ)
+    for pin in (17, 22, 23):
+        GPIO.setup(pin, GPIO.OUT, initial=GPIO.HIGH)
+
+    DATA, CLK, LATCH = 16, 20, 21
+    s = Shifter(DATA, CLK, LATCH)
+
+    m1 = Stepper(s, bit_offset=0)
+    m2 = Stepper(s, bit_offset=4)
+
+    m1.zero(); m2.zero()
+
+    # ---- PART 1: both motors move together ----
+    p1 = m1.goAngle(90)
+    p2 = m2.goAngle(-90)
+    p1.join(); p2.join()
+
+    # ---- PART 2: next pair of moves, still simultaneous ----
+    p1 = m1.goAngle(-45)   # from +90 to -45 (via shortest path)
+    p2 = m2.goAngle(45)    # from -90 to +45
+    p1.join(); p2.join()
+
+    # ---- PART 3: final pair of moves, still simultaneous ----
+    p1 = m1.goAngle(-135)
+    p2 = m2.goAngle(135)
+    p1.join(); p2.join()
+
+    # home both
+    p1 = m1.goAngle(0)
+    p2 = m2.goAngle(0)
+    p1.join(); p2.join()
+
+    GPIO.cleanup()
