@@ -2,7 +2,8 @@
 import time, sys
 import RPi.GPIO as GPIO
 
-PIN_IN1, PIN_IN2, PIN_IN3, PIN_IN4 = 5, 6, 13, 19
+PIN_IN1, PIN_IN2, PIN_IN3, PIN_IN4 = 17, 27, 22, 23
+PIN_IN5, PIN_IN6, PIN_IN7, PIN_IN8 = 5, 6, 13, 19
 PIN_EN12, PIN_EN34 = 24, 25  # set to GPIO numbers if you wired them
 
 FULLSTEP_SEQ = [
@@ -16,7 +17,7 @@ def setup():
     try:
         GPIO.setwarnings(False)
         GPIO.setmode(GPIO.BCM)
-        for p in (PIN_IN1, PIN_IN2, PIN_IN3, PIN_IN4):
+        for p in (PIN_IN1, PIN_IN2, PIN_IN3, PIN_IN4, PIN_IN5, PIN_IN6, PIN_IN7, PIN_IN8):
             GPIO.setup(p, GPIO.OUT, initial=GPIO.HIGH)  # HIGH = off (LOW=ON with L293D)
         if PIN_EN12 is not None:
             GPIO.setup(PIN_EN12, GPIO.OUT, initial=GPIO.HIGH)
@@ -33,9 +34,13 @@ def write_coils(a,b,c,d):
     if not _pins_configured:
         return
     GPIO.output(PIN_IN1, GPIO.LOW if a else GPIO.HIGH)
+    GPIO.output(PIN_IN5, GPIO.LOW if a else GPIO.HIGH)
     GPIO.output(PIN_IN2, GPIO.LOW if b else GPIO.HIGH)
+    GPIO.output(PIN_IN6, GPIO.LOW if b else GPIO.HIGH)
     GPIO.output(PIN_IN3, GPIO.LOW if c else GPIO.HIGH)
+    GPIO.output(PIN_IN7, GPIO.LOW if c else GPIO.HIGH)
     GPIO.output(PIN_IN4, GPIO.LOW if d else GPIO.HIGH)
+    GPIO.output(PIN_IN9, GPIO.LOW if d else GPIO.HIGH)
 
 def release():
     if _pins_configured:
