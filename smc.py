@@ -8,19 +8,16 @@ import multiprocessing as mp
 # Reuse your Shifter class exactly as in your screenshot.
 # It must expose: shiftByte(databyte:int)
 
-# 8 half-step coil patterns, LSB..MSB = coils 1..4
-_HALF_STEP = [
-    0b0001,  # 1
+# 4 full-step coil patterns, LSB..MSB = coils 1..4 (two-phase-on)
+_FULL_STEP = [
     0b0011,  # 1+2
-    0b0010,  # 2
     0b0110,  # 2+3
-    0b0100,  # 3
     0b1100,  # 3+4
-    0b1000,  # 4
     0b1001,  # 4+1
 ]
 
-STEP_ANGLE_DEG = 360.0 / 4096.0  # 28BYJ-48, half-step effective output shaft angle
+# 28BYJ-48, full-step effective output shaft angle (2048 steps/rev)
+STEP_ANGLE_DEG = 360.0 / 2048.0
 
 def _norm_shortest_delta(target_deg, current_deg):
     """Return signed shortest delta in degrees in (-180, 180]."""
@@ -34,14 +31,14 @@ class Stepper:
         """
         shifter: shared Shifter instance (drives the 74HC595)
         bit_offset: 0 for QA..QD, 4 for QE..QH
-        step_delay: seconds between half-steps (speed control)
+        step_delay: seconds between full-steps (speed control)
         """
         self.s = shifter
         self.bit_offset = bit_offset
         self.step_delay = step_delay
         # Shared angle across processes (double precision)
         self.angle_deg = mp.Value('d', 0.0)
-        # Shared current index in the 8-phase sequence
+        # Shared current index in the 4-phase sequence
         self.phase = mp.Value('i', 0)
 
     # ---- low-level: write 8-bit image to the 595 with our 4 bits in place ----
@@ -50,19 +47,21 @@ class Stepper:
         return (nibble4 & 0x0F) << self.bit_offset
 
     def _write_phase(self, phase_idx):
-        pattern4 = _HALF_STEP[phase_idx & 0x7]  # 4-bit for this motor
+        seq_len = len(_FULL_STEP)
+        pattern4 = _FULL_STEP[phase_idx % seq_len]  # 4-bit for this motor
         out_byte = self._compose_byte(pattern4)
         self.s.shiftByte(out_byte)  # clocks & latches inside your Shifter
         with self.phase.get_lock():
-            self.phase.value = phase_idx & 0x7
+            self.phase.value = phase_idx % seq_len
 
     # ---- worker used by multiprocessing ----
     def _step_worker(self, steps, direction, step_delay):
+        seq_len = len(_FULL_STEP)
         # read once
         with self.phase.get_lock():
             idx = self.phase.value
         for _ in range(abs(steps)):
-            idx = (idx + (1 if direction > 0 else -1)) & 0x7
+            idx = (idx + (1 if direction > 0 else -1)) % seq_len
             self._write_phase(idx)
             time.sleep(step_delay)
             # update shared angle
@@ -104,6 +103,10 @@ if __name__ == "__main__":
     from time import sleep
 
     GPIO.setmode(GPIO.BCM)
+
+    # Tie EN (or other control) pins high: 17, 22, 23
+    for pin in (17, 22, 23):
+        GPIO.setup(pin, GPIO.OUT, initial=GPIO.HIGH)
 
     # Your exact pins from the screenshot:
     DATA, CLK, LATCH = 16, 20, 21
