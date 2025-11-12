@@ -11,32 +11,35 @@ PIN_IN2 = 27
 PIN_IN3 = 22
 PIN_IN4 = 23
 
-# Enable pins for L293D (if wired)
-PIN_EN12 = None   # GPIO 24 controls EN1,2 (L293D pin 1)
-PIN_EN34 = None   # GPIO 25 controls EN3,4 (L293D pin 9)
-
+# If you wired EN pins to GPIO, set these; otherwise set to None and tie them HIGH on the board
+PIN_EN12 = None   # L293D EN1,2 (pin 1)
+PIN_EN34 = None   # L293D EN3,4 (pin 9)
 
 # ========= Motor constants =========
 # 28BYJ-48 typically ~4096 half-steps per output shaft revolution (gearbox)
 HALFSTEPS_PER_REV = 4096
 
 # Half-step sequence: energize one or two coils at a time
-# Two-phase FULL-STEP (more torque than half-step)
-FULLSTEP_2PH = [
+HALFSTEP_SEQ = [
+    (1,0,0,0),
     (1,1,0,0),
+    (0,1,0,0),
     (0,1,1,0),
+    (0,0,1,0),
     (0,0,1,1),
+    (0,0,0,1),
     (1,0,0,1),
 ]
 
-def run_fullsteps(n_steps, delay_s=0.008, direction=1):
-    idx = 0
-    for _ in range(abs(int(n_steps))):
-        idx = (idx + (1 if direction >= 0 else -1)) % 4
-        a,b,c,d = FULLSTEP_2PH[idx]
-        set_coils(a,b,c,d)   # your set_coils() from earlier
-        time.sleep(delay_s)
+def setup():
+    GPIO.setmode(GPIO.BCM)
+    for p in (PIN_IN1, PIN_IN2, PIN_IN3, PIN_IN4):
+        GPIO.setup(p, GPIO.OUT, initial=GPIO.LOW)
 
+    if PIN_EN12 is not None:
+        GPIO.setup(PIN_EN12, GPIO.OUT, initial=GPIO.HIGH)
+    if PIN_EN34 is not None:
+        GPIO.setup(PIN_EN34, GPIO.OUT, initial=GPIO.HIGH)
 
 def set_coils(a, b, c, d):
     GPIO.output(PIN_IN1, GPIO.HIGH if a else GPIO.LOW)
