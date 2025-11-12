@@ -40,7 +40,7 @@ def write_coils(a,b,c,d):
     GPIO.output(PIN_IN3, GPIO.LOW if c else GPIO.HIGH)
     GPIO.output(PIN_IN7, GPIO.LOW if c else GPIO.HIGH)
     GPIO.output(PIN_IN4, GPIO.LOW if d else GPIO.HIGH)
-    GPIO.output(PIN_IN9, GPIO.LOW if d else GPIO.HIGH)
+    GPIO.output(PIN_IN8, GPIO.LOW if d else GPIO.HIGH)
 
 def release():
     if _pins_configured:
