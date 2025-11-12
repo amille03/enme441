@@ -169,4 +169,3 @@ if __name__ == "__main__":
     m1.goAngle(135)
     m1.goAngle(0)
 
-    GPIO.cleanup()
