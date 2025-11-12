@@ -16,31 +16,25 @@ class Shifter:
         GPIO.setup(clock, GPIO.OUT)
         GPIO.setup(latch, GPIO.OUT)
 
-    def ping(self, pin):
+    def pulse(self, pin):
         GPIO.output(pin, 1)
         sleep(0)
         GPIO.output(pin, 0)
 
-    def shiftword(self, dataword, num_bits):
-        # pad to byte boundary
-        for _ in range((num_bits + 1) % 8):
-            GPIO.output(self.dataPin, 0)
-            self.ping(self.clockPin)
+    def shiftByte(self, value):
+        """MSB FIRST — REQUIRED for 74HC595 on Raspberry Pi"""
+        # Begin sending bits
+        for i in range(7, -1, -1):      # MSB → LSB
+            GPIO.output(self.dataPin, (value >> i) & 1)
+            self.pulse(self.clockPin)
 
-        for i in range(num_bits):
-            GPIO.output(self.dataPin, dataword & (1 << i))
-            self.ping(self.clockPin)
-
-        self.ping(self.latchPin)
-
-    def shiftByte(self, databyte):
-        self.shiftword(databyte, 8)
+        self.pulse(self.latchPin)
 
 
 # -------------- GLOBAL SHIFT REGISTER BYTE --------------
 SR_STATE = mp.Value('i', 0, lock=True)
 
-# Two-phase-on, full-step sequence
+# Two-phase-on full-step pattern
 FULLSTEP = [
     0b0011,
     0b0110,
@@ -56,17 +50,17 @@ DEG_PER_STEP = 360 / STEPS_PER_REV
 class Stepper:
     def __init__(self, sh, base_bit):
         self.sh = sh
-        self.base_bit = base_bit   # 0–3 for m1, 4–7 for m2
+        self.base_bit = base_bit       # 0 for motor1, 4 for motor2
         self.mask = 0b1111 << base_bit
 
-        self.step_delay = 0.01
         self.index = 0
-        self.angle = mp.Value('d', 0.0)  # shared angle
+        self.angle = mp.Value('d', 0.0)
+
+        self.step_delay = 0.02         # ✅ slightly slower
 
         self.proc = None
 
     def _apply(self, pattern):
-        """update ONLY this motor's 4 bits"""
         with SR_STATE.get_lock():
             old = SR_STATE.value & (~self.mask)
             new = old | ((pattern << self.base_bit) & self.mask)
@@ -91,15 +85,12 @@ class Stepper:
             sleep(self.step_delay)
 
     def goAngle(self, deg):
-        # ensure previous motion done
         if self.proc:
             self.proc.join()
 
         with self.angle.get_lock():
-            cur = self.angle.value
-
+            cur = self.angle.value % 360
         tgt = deg % 360
-        cur = cur % 360
 
         delta = (tgt - cur) % 360
         if delta > 180:
@@ -118,7 +109,7 @@ class Stepper:
         if self.proc:
             self.proc.join()
         with self.angle.get_lock():
-            self.angle.value = 0.0
+            self.angle.value = 0
 
     def wait(self):
         if self.proc:
@@ -128,34 +119,31 @@ class Stepper:
 
 # ---------------- MAIN ----------------
 def main():
-    # Required pins set HIGH
+    # Enable pins
     for p in (17, 22, 23):
         GPIO.setup(p, GPIO.OUT)
         GPIO.output(p, GPIO.HIGH)
 
     sh = Shifter(data=16, clock=20, latch=21)
 
-    m1 = Stepper(sh, base_bit=0)  # bits 0–3
-    m2 = Stepper(sh, base_bit=4)  # bits 4–7
+    m1 = Stepper(sh, base_bit=0)   # bits 0–3
+    m2 = Stepper(sh, base_bit=4)   # bits 4–7
 
     try:
-        # -------- EXACT LAB COMMAND SEQUENCE --------
+        # Exact lab sequence
         m1.zero()
         m2.zero()
 
-        # these two MUST move simultaneously
         m1.goAngle(90)
         m2.goAngle(-45)
         m1.wait()
         m2.wait()
 
-        # also simultaneous
         m2.goAngle(-90)
         m1.goAngle(45)
         m1.wait()
         m2.wait()
 
-        # Motor 1 final sequence
         m1.goAngle(-135)
         m1.wait()
 
