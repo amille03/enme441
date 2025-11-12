@@ -25,10 +25,6 @@ def _norm_shortest_delta(target_deg, current_deg):
     return d
 
 
-# Shared 8-bit image for the shift register and a lock
-SHIFT_BYTE = mp.Value('B', 0)   # unsigned char
-SHIFT_LOCK = mp.Lock()
-
 # ---------- 74HC595 SHIFTER ----------
 
 class Shifter:
@@ -52,7 +48,7 @@ class Shifter:
             GPIO.output(self.dataPin, 0)
             self.ping(self.clockPin)
 
-        # shift LSB first
+        # LSB first
         for i in range(num_bits):
             bit = 1 if (dataword & (1 << i)) else 0
             GPIO.output(self.dataPin, bit)
@@ -67,30 +63,36 @@ class Shifter:
 # ---------- STEPPER CLASS USING SHIFTER ----------
 
 class Stepper:
-    def __init__(self, shifter, bit_offset=0, step_delay=0.003):
+    def __init__(self, shifter, shared_byte, shared_lock,
+                 bit_offset=0, step_delay=0.003):
         """
         shifter: shared Shifter instance (drives the 74HC595)
+        shared_byte: multiprocessing.Value('B') shared by all motors
+        shared_lock: multiprocessing.Lock shared by all motors
         bit_offset: 0 for QA..QD, 4 for QE..QH
         step_delay: seconds between full-steps (speed control)
         """
         self.s = shifter
+        self.shared_byte = shared_byte
+        self.shared_lock = shared_lock
         self.bit_offset = bit_offset
         self.step_delay = step_delay
-        self.angle_deg = mp.Value('d', 0.0)  # shared logical angle
-        self.phase = mp.Value('i', 0)        # shared index in _FULL_STEP
-        self.proc = None                     # last motion process for this motor
+        # Shared logical angle for THIS motor
+        self.angle_deg = mp.Value('d', 0.0)
+        # Shared current index in the 4-phase sequence
+        self.phase = mp.Value('i', 0)
 
+    # write this motor's nibble into the shared 8-bit value
     def _write_phase(self, phase_idx):
         seq_len = len(_FULL_STEP)
         pattern4 = _FULL_STEP[phase_idx % seq_len]
 
-        # update only our nibble in SHIFT_BYTE
-        with SHIFT_LOCK:
-            byte = SHIFT_BYTE.value
+        with self.shared_lock:
+            byte = self.shared_byte.value
             mask = 0x0F << self.bit_offset
             byte &= ~mask
             byte |= (pattern4 & 0x0F) << self.bit_offset
-            SHIFT_BYTE.value = byte
+            self.shared_byte.value = byte
             self.s.shiftByte(byte)
 
         with self.phase.get_lock():
@@ -110,41 +112,36 @@ class Stepper:
                     self.angle_deg.value + direction * STEP_ANGLE_DEG
                 ) % 360.0
 
-        # de-energize ONLY this motor's coils
-        with SHIFT_LOCK:
-            byte = SHIFT_BYTE.value
+        # de-energize only this motor's coils
+        with self.shared_lock:
+            byte = self.shared_byte.value
             mask = 0x0F << self.bit_offset
             byte &= ~mask
-            SHIFT_BYTE.value = byte
+            self.shared_byte.value = byte
             self.s.shiftByte(byte)
 
     # ---- public APIs ----
     def rotate(self, degrees, speed_hz=200):
         """
-        Rotate relative by 'degrees'.
-
-        - Ensures THIS motor's previous motion finishes before starting a new one
-          (so its commands happen in sequence).
-        - Still allows the *other* motor to run concurrently.
+        Rotate relative by 'degrees' (non-blocking).
+        If m1.rotate(...) and m2.rotate(...) are called sequentially,
+        both motors run at the same time in separate processes.
         """
-        # ensure our previous process (if any) is done
-        if self.proc is not None and self.proc.is_alive():
-            self.proc.join()
-
         direction = 1 if degrees >= 0 else -1
         steps = int(round(abs(degrees) / STEP_ANGLE_DEG))
         step_delay = max(1.0 / float(speed_hz), self.step_delay)
 
-        p = mp.Process(
-            target=self._step_worker,
-            args=(steps, direction, step_delay)
-        )
+        p = mp.Process(target=self._step_worker,
+                       args=(steps, direction, step_delay))
         p.start()
-        self.proc = p
         return p
 
     def goAngle(self, target_deg, speed_hz=200):
-        """Absolute move to target_deg via the shortest path."""
+        """
+        Absolute move to target_deg using the SHORTEST path.
+        Uses self.angle_deg (multiprocessing.Value) so the angle
+        is shared across processes, as required in the handout.
+        """
         with self.angle_deg.get_lock():
             cur = self.angle_deg.value % 360.0
         tgt = target_deg % 360.0
@@ -154,11 +151,6 @@ class Stepper:
     def zero(self):
         with self.angle_deg.get_lock():
             self.angle_deg.value = 0.0
-
-    def wait(self):
-        """Wait for this motor's last motion to finish."""
-        if self.proc is not None and self.proc.is_alive():
-            self.proc.join()
 
 
 # ---------------- demo / lab harness ----------------
@@ -172,10 +164,15 @@ if __name__ == "__main__":
     DATA, CLK, LATCH = 16, 20, 21
     s = Shifter(DATA, CLK, LATCH)
 
-    m1 = Stepper(s, bit_offset=0)
-    m2 = Stepper(s, bit_offset=4)
+    # SINGLE shared 8-bit register image + lock for both motors
+    shared_byte = mp.Value('B', 0)
+    shared_lock = mp.Lock()
 
-    # ----- EXACT lab command sequence -----
+    # Motor 1 on QA..QD, Motor 2 on QE..QH
+    m1 = Stepper(s, shared_byte, shared_lock, bit_offset=0)
+    m2 = Stepper(s, shared_byte, shared_lock, bit_offset=4)
+
+    # ---- EXACT handout command sequence ----
     m1.zero()
     m2.zero()
 
@@ -188,10 +185,9 @@ if __name__ == "__main__":
     m1.goAngle(-135)
     m1.goAngle(135)
     m1.goAngle(0)
-    # --------------------------------------
+    # ---------------------------------------
 
-    # wait for both motors to finish their last motion
-    m1.wait()
-    m2.wait()
+    # Give any still-running processes time to finish
+    time.sleep(5)
 
     GPIO.cleanup()
