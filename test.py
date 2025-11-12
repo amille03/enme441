@@ -21,26 +21,22 @@ PIN_EN34 = None   # GPIO 25 controls EN3,4 (L293D pin 9)
 HALFSTEPS_PER_REV = 4096
 
 # Half-step sequence: energize one or two coils at a time
-HALFSTEP_SEQ = [
-    (1,0,0,0),
+# Two-phase FULL-STEP (more torque than half-step)
+FULLSTEP_2PH = [
     (1,1,0,0),
-    (0,1,0,0),
     (0,1,1,0),
-    (0,0,1,0),
     (0,0,1,1),
-    (0,0,0,1),
     (1,0,0,1),
 ]
 
-def setup():
-    GPIO.setmode(GPIO.BCM)
-    for p in (PIN_IN1, PIN_IN2, PIN_IN3, PIN_IN4):
-        GPIO.setup(p, GPIO.OUT, initial=GPIO.LOW)
+def run_fullsteps(n_steps, delay_s=0.008, direction=1):
+    idx = 0
+    for _ in range(abs(int(n_steps))):
+        idx = (idx + (1 if direction >= 0 else -1)) % 4
+        a,b,c,d = FULLSTEP_2PH[idx]
+        set_coils(a,b,c,d)   # your set_coils() from earlier
+        time.sleep(delay_s)
 
-    if PIN_EN12 is not None:
-        GPIO.setup(PIN_EN12, GPIO.OUT, initial=GPIO.HIGH)
-    if PIN_EN34 is not None:
-        GPIO.setup(PIN_EN34, GPIO.OUT, initial=GPIO.HIGH)
 
 def set_coils(a, b, c, d):
     GPIO.output(PIN_IN1, GPIO.HIGH if a else GPIO.LOW)
