@@ -11,6 +11,11 @@ PIN_IN2 = 27
 PIN_IN3 = 22
 PIN_IN4 = 23
 
+# Enable pins for L293D (if wired)
+PIN_EN12 = None   # GPIO 24 controls EN1,2 (L293D pin 1)
+PIN_EN34 = None   # GPIO 25 controls EN3,4 (L293D pin 9)
+
+
 # ========= Motor constants =========
 # 28BYJ-48 typically ~4096 half-steps per output shaft revolution (gearbox)
 HALFSTEPS_PER_REV = 4096
