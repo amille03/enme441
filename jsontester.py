@@ -1,7 +1,7 @@
 import requests
 import json
 
-URL = "https://github.com/amille03/enme441/blob/main/jsontest.json"
+URL = "https://raw.githubusercontent.com/amille03/enme441/refs/heads/main/jsontest.json"
 
 # Download the file over WiFi
 response = requests.get(URL)
