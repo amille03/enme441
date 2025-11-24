@@ -2,7 +2,7 @@ import requests
 import json
 
 # RAW GitHub JSON URL
-url = "https://raw.githubusercontent.com/amille03/enme441/main/jsontest.json"
+url = "http://192.168.1.254:8000/positions.json"
 
 # Retrieve and parse JSON
 response = requests.get(url)
