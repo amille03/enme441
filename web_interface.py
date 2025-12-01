@@ -2,51 +2,80 @@
 import http.server
 import socketserver
 import urllib.parse
-import subprocess
 import threading
+import time
 
-PORT = 8000
+from RPi import GPIO
+from shifter import Shifter
+from stepper_class_shiftregister_multiprocessing import Stepper
+import multiprocessing
+
+# ================================================================
+#       INITIALIZE MOTORS HERE SO WE CAN CONTROL THEM DIRECTLY
+# ================================================================
+
+GPIO.setwarnings(False)
+GPIO.setmode(GPIO.BCM)
+
+# One shared shift register for both motors
+s = Shifter(data=17, clock=27, latch=22)
+
+# A lock so both motors don’t update the shift register at the same time
+lock = multiprocessing.Lock()
+
+# Instantiate the stepper motors
+m1 = Stepper(s, lock)   # Turret motor (Qe–Qh)
+m2 = Stepper(s, lock)   # Globe motor (Qa–Qd)
+
+# Zero the motors when server starts
+try:
+    m1.zero()
+    m2.zero()
+except:
+    pass
+
+print("[SERVER] Motors initialized and zeroed.")
+
+
+# ================================================================
+#                     HTML WEB PAGE
+# ================================================================
 
 PAGE = """
 <!DOCTYPE html>
 <html>
 <head>
-<title>Turret Interface</title>
+<title>ENME441 Turret Control</title>
 <style>
 body { font-family: Arial; max-width: 600px; margin:auto; }
 fieldset { padding: 15px; margin-top: 20px; }
-label { display:inline-block; width:150px; }
+label { display:inline-block; width:140px; }
 button { padding: 8px 20px; }
 </style>
 </head>
 <body>
 
-<h1>Turret Motor Interface</h1>
+<h1>ENME441 Manual Turret Control</h1>
 
-<!-- Run Full Turret Code -->
+<!-- Enter Turret ID -->
 <fieldset>
-<legend>Run Turret Code</legend>
-<form method="POST" action="/run">
-<label>Enter Turret ID:</label>
-<input type="number" name="tid" required><br><br>
-<button>Run Turret Program</button>
+<legend>Set Turret ID</legend>
+<form method="POST" action="/id">
+<label>Turret ID:</label>
+<input type="number" name="tid" required>
+<button>Set ID</button>
 </form>
 </fieldset>
 
-<!-- Manual Motor Control -->
+<!-- Manual Motor Movement -->
 <fieldset>
 <legend>Manual Motor Movement</legend>
 <form method="POST" action="/move">
-<label>Motor:</label>
-<select name="motor">
-  <option value="1">Motor 1</option>
-  <option value="2">Motor 2</option>
-</select><br><br>
-
-<label>Degrees:</label>
-<input type="number" step="0.1" name="deg" required><br><br>
-
-<button>Rotate</button>
+<label>Turret Motor (deg):</label>
+<input type="number" name="turret" step="0.1"><br><br>
+<label>Globe Motor (deg):</label>
+<input type="number" name="globe" step="0.1"><br><br>
+<button>Rotate Motors</button>
 </form>
 </fieldset>
 
@@ -54,30 +83,12 @@ button { padding: 8px 20px; }
 </html>
 """
 
+current_turret_id = None
 
-# ---- Manual motor movement (no import of turretmotors) ----
-def rotate_motor(motor, degrees):
-    import RPi.GPIO as GPIO
-    from shifter import Shifter
-    from stepper_class_shiftregister_multiprocessing import Stepper
-    import multiprocessing
-    import time
 
-    print(f"[MANUAL] Rotating Motor {motor} by {degrees} degrees")
-
-    s = Shifter(data=17, clock=27, latch=22)
-    lock = multiprocessing.Lock()
-
-    m1 = Stepper(s, lock)
-    m2 = Stepper(s, lock)
-
-    if motor == 1:
-        m1.rotate(degrees)
-    else:
-        m2.rotate(degrees)
-
-    time.sleep(0.1)
-
+# ================================================================
+#                     HTTP SERVER HANDLER
+# ================================================================
 
 class Handler(http.server.BaseHTTPRequestHandler):
 
@@ -85,7 +96,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         data = html.encode()
         self.send_response(200)
         self.send_header("Content-Type","text/html")
-        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Content-Length",str(len(data)))
         self.end_headers()
         self.wfile.write(data)
 
@@ -93,32 +104,43 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.send_html(PAGE)
 
     def do_POST(self):
+        global current_turret_id
+
         length = int(self.headers.get("Content-Length",0))
-        raw = self.rfile.read(length).decode()
-        params = urllib.parse.parse_qs(raw)
+        body = self.rfile.read(length).decode()
+        params = urllib.parse.parse_qs(body)
 
-        # ---- Run turret code ----
-        if self.path == "/run":
-            tid = params["tid"][0]
-
-            def run_motor_program():
-                print(f"[SERVER] Running turretmotors.py with ID {tid}")
-                subprocess.Popen(["python3", "turretmotors.py", tid])
-
-            threading.Thread(target=run_motor_program, daemon=True).start()
+        # ---------------- SET ID ----------------
+        if self.path == "/id":
+            current_turret_id = params.get("tid",[""])[0]
+            print(f"[SERVER] Turret ID set to: {current_turret_id}")
             return self.send_html(PAGE)
 
-        # ---- Manual motor control ----
+        # ---------------- MANUAL MOTOR MOVEMENT ----------------
         if self.path == "/move":
-            motor = int(params["motor"][0])
-            deg = float(params["deg"][0])
+            turret_deg = float(params.get("turret",[0])[0])
+            globe_deg  = float(params.get("globe", [0])[0])
 
-            rotate_motor(motor, deg)
+            print(f"[SERVER] Moving turret m1 by {turret_deg}°")
+            print(f"[SERVER] Moving globe  m2 by {globe_deg}°")
+
+            def worker():
+                if turret_deg != 0:
+                    m1.rotate(turret_deg)
+                if globe_deg != 0:
+                    m2.rotate(globe_deg)
+
+            threading.Thread(target=worker, daemon=True).start()
             return self.send_html(PAGE)
 
+        self.send_html(PAGE)
 
-# ---- Start server first ----
+
+# ================================================================
+#                     START SERVER
+# ================================================================
+
+PORT = 8000
 with socketserver.TCPServer(("", PORT), Handler) as server:
-    print(f"\nWeb interface running at: http://<your_pi_ip>:{PORT}\n")
-    print("Press CTRL+C to stop.")
+    print(f"[SERVER] Web UI running on: http://<your_pi_ip>:{PORT}")
     server.serve_forever()
