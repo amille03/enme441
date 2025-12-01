@@ -3,144 +3,192 @@ import http.server
 import socketserver
 import urllib.parse
 import threading
+import subprocess
 import time
+import multiprocessing
 
 from RPi import GPIO
 from shifter import Shifter
 from stepper_class_shiftregister_multiprocessing import Stepper
-import multiprocessing
 
-# ================================================================
-#       INITIALIZE MOTORS HERE SO WE CAN CONTROL THEM DIRECTLY
-# ================================================================
+PORT = 8000
+
+# ----------------- MOTOR SETUP FOR MANUAL CONTROL -----------------
 
 GPIO.setwarnings(False)
 GPIO.setmode(GPIO.BCM)
 
-# One shared shift register for both motors
+# One shared shift register for both motors (same wiring as turretmotors.py)
 s = Shifter(data=17, clock=27, latch=22)
 
-# A lock so both motors don’t update the shift register at the same time
+# Lock so only one motor updates shifter at a time (like your main code)
 lock = multiprocessing.Lock()
 
-# Instantiate the stepper motors
-m1 = Stepper(s, lock)   # Turret motor (Qe–Qh)
-m2 = Stepper(s, lock)   # Globe motor (Qa–Qd)
+# Two stepper motors on same shift register
+m1 = Stepper(s, lock)   # motor on Qe–Qh
+m2 = Stepper(s, lock)   # motor on Qa–Qd
 
-# Zero the motors when server starts
-try:
-    m1.zero()
-    m2.zero()
-except:
-    pass
+# Zero both motors for manual session
+m1.zero()
+m2.zero()
 
-print("[SERVER] Motors initialized and zeroed.")
+print("[SERVER] Manual motors initialized and zeroed.")
 
 
-# ================================================================
-#                     HTML WEB PAGE
-# ================================================================
+# ----------------- HTML PAGE -----------------
 
 PAGE = """
 <!DOCTYPE html>
 <html>
 <head>
-<title>ENME441 Turret Control</title>
-<style>
-body { font-family: Arial; max-width: 600px; margin:auto; }
-fieldset { padding: 15px; margin-top: 20px; }
-label { display:inline-block; width:140px; }
-button { padding: 8px 20px; }
-</style>
+  <meta charset="utf-8">
+  <title>Turret Web Interface</title>
+  <style>
+    body { font-family: Arial, sans-serif; max-width: 600px; margin: 20px auto; }
+    fieldset { margin-bottom: 20px; padding: 15px; }
+    label { display: inline-block; width: 150px; }
+    input[type=number] { width: 120px; }
+    button { padding: 6px 16px; margin-top: 8px; }
+  </style>
 </head>
 <body>
+  <h1>Turret Control</h1>
 
-<h1>ENME441 Manual Turret Control</h1>
+  <!-- Manual movement -->
+  <fieldset>
+    <legend>Manual Motor Movement (Relative)</legend>
+    <form method="POST" action="/move">
+      <p>
+        <label for="turret">Turret Δangle (deg):</label>
+        <input id="turret" name="turret" type="number" step="0.1" required>
+      </p>
+      <p>
+        <label for="globe">Globe Δangle (deg):</label>
+        <input id="globe" name="globe" type="number" step="0.1" required>
+      </p>
+      <button type="submit">Move Motors</button>
+    </form>
+    <p><small>Positive values rotate one way, negative values the opposite way.</small></p>
+  </fieldset>
 
-<!-- Enter Turret ID -->
-<fieldset>
-<legend>Set Turret ID</legend>
-<form method="POST" action="/id">
-<label>Turret ID:</label>
-<input type="number" name="tid" required>
-<button>Set ID</button>
-</form>
-</fieldset>
-
-<!-- Manual Motor Movement -->
-<fieldset>
-<legend>Manual Motor Movement</legend>
-<form method="POST" action="/move">
-<label>Turret Motor (deg):</label>
-<input type="number" name="turret" step="0.1"><br><br>
-<label>Globe Motor (deg):</label>
-<input type="number" name="globe" step="0.1"><br><br>
-<button>Rotate Motors</button>
-</form>
-</fieldset>
+  <!-- Run full JSON-based turret sequence -->
+  <fieldset>
+    <legend>Run JSON Target Sequence (turretmotors.py)</legend>
+    <form method="POST" action="/auto">
+      <p>
+        <label for="tid">Turret ID:</label>
+        <input id="tid" name="tid" type="number" min="1" required>
+      </p>
+      <button type="submit">Run turretmotors.py with this ID</button>
+    </form>
+    <p><small>
+      This will start <code>turretmotors.py</code> in the background and feed the ID
+      into its <code>input("Enter our turret ID: ")</code> prompt.
+    </small></p>
+  </fieldset>
 
 </body>
 </html>
 """
 
-current_turret_id = None
 
+# ----------------- HTTP HANDLER -----------------
 
-# ================================================================
-#                     HTTP SERVER HANDLER
-# ================================================================
+class TurretHandler(http.server.BaseHTTPRequestHandler):
 
-class Handler(http.server.BaseHTTPRequestHandler):
-
-    def send_html(self, html):
-        data = html.encode()
+    def _send_html(self, html: str):
+        data = html.encode("utf-8")
         self.send_response(200)
-        self.send_header("Content-Type","text/html")
-        self.send_header("Content-Length",str(len(data)))
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)
 
     def do_GET(self):
-        self.send_html(PAGE)
+        # Always serve the main UI
+        print("[SERVER] GET", self.path)
+        self._send_html(PAGE)
 
     def do_POST(self):
-        global current_turret_id
-
-        length = int(self.headers.get("Content-Length",0))
-        body = self.rfile.read(length).decode()
+        length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(length).decode("utf-8")
         params = urllib.parse.parse_qs(body)
 
-        # ---------------- SET ID ----------------
-        if self.path == "/id":
-            current_turret_id = params.get("tid",[""])[0]
-            print(f"[SERVER] Turret ID set to: {current_turret_id}")
-            return self.send_html(PAGE)
+        print(f"[SERVER] POST {self.path} params={params}")
 
-        # ---------------- MANUAL MOTOR MOVEMENT ----------------
         if self.path == "/move":
-            turret_deg = float(params.get("turret",[0])[0])
-            globe_deg  = float(params.get("globe", [0])[0])
+            # Manual relative movement
+            try:
+                turret_delta = float(params.get("turret", ["0"])[0])
+                globe_delta = float(params.get("globe", ["0"])[0])
+            except ValueError:
+                print("[SERVER] Invalid movement values.")
+                return self._send_html(PAGE)
 
-            print(f"[SERVER] Moving turret m1 by {turret_deg}°")
-            print(f"[SERVER] Moving globe  m2 by {globe_deg}°")
+            # Rotate motors
+            try:
+                print(f"[MANUAL] m1.rotate({turret_delta})")
+                m1.rotate(turret_delta)
+                print(f"[MANUAL] m2.rotate({globe_delta})")
+                m2.rotate(globe_delta)
+            except Exception as e:
+                print("[MANUAL] Error rotating motors:", e)
 
-            def worker():
-                if turret_deg != 0:
-                    m1.rotate(turret_deg)
-                if globe_deg != 0:
-                    m2.rotate(globe_deg)
+            return self._send_html(PAGE)
 
-            threading.Thread(target=worker, daemon=True).start()
-            return self.send_html(PAGE)
+        elif self.path == "/auto":
+            # Run turretmotors.py and feed turret ID into its input()
+            tid_str = params.get("tid", [""])[0].strip()
+            if not tid_str:
+                print("[AUTO] No turret ID provided.")
+                return self._send_html(PAGE)
 
-        self.send_html(PAGE)
+            def worker(tid: str):
+                print(f"[AUTO] Starting turretmotors.py with ID {tid}")
+                try:
+                    proc = subprocess.Popen(
+                        ["python3", "turretmotors.py"],
+                        stdin=subprocess.PIPE,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.STDOUT,
+                        text=True
+                    )
+
+                    # Send the ID to its input() prompt
+                    proc.stdin.write(tid + "\n")
+                    proc.stdin.flush()
+
+                    # Stream its output to server console
+                    for line in proc.stdout:
+                        print("[turretmotors]", line, end="")
+
+                    proc.wait()
+                    print(f"[AUTO] turretmotors.py finished with code {proc.returncode}")
+
+                except Exception as e:
+                    print("[AUTO] Error running turretmotors.py:", e)
+
+            threading.Thread(target=worker, args=(tid_str,), daemon=True).start()
+            return self._send_html(PAGE)
+
+        else:
+            # Unknown path
+            return self._send_html("<h1>404 Not Found</h1>")
 
 
-# ================================================================
-#                     START SERVER
-# ================================================================
+# ----------------- MAIN SERVER START -----------------
 
-PORT = 8000
-with socketserver.TCPServer(("", PORT), Handler) as server:
-    print(f"[SERVER] Web UI running on: http://<your_pi_ip>:{PORT}")
-    server.serve_forever()
+def main():
+    with socketserver.TCPServer(("", PORT), TurretHandler) as httpd:
+        print(f"[SERVER] Web UI running at http://<your_pi_ip>:{PORT}")
+        print("[SERVER] Use 'hostname -I' on the Pi to find <your_pi_ip>.")
+        try:
+            httpd.serve_forever()
+        except KeyboardInterrupt:
+            print("\n[SERVER] Shutting down...")
+        finally:
+            GPIO.cleanup()
+
+
+if __name__ == "__main__":
+    main()
