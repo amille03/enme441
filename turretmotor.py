@@ -4,12 +4,57 @@ from shifter import Shifter
 import time
 import multiprocessing
 from stepper_class_shiftregister_multiprocessing import Stepper
+import requests
+import json
+
+
+GPIO.setmode(GPIO.BCM)
+# RAW GitHub JSON URL
+#url = "http://192.168.1.254:8000/positions.json"
+#test url
+url = "https://raw.githubusercontent.com/Jpil15/JacobENME441/refs/heads/main/jsontest.json"
+
+# Retrieve and parse JSON
+response = requests.get(url)
+data = response.json()
+
+# ----- Extract Turret Data -----
+turret_ids = []
+turret_r = []
+turret_theta = []
+
+for tid, tinfo in data["turrets"].items():
+    turret_ids.append(int(tid))
+    turret_r.append(tinfo["r"])
+    turret_theta.append(tinfo["theta"])
+
+# ----- Extract Globe Data -----
+globe_r = []
+globe_theta = []
+globe_z = []
+
+for g in data["globes"]:
+    globe_r.append(g["r"])
+    globe_theta.append(g["theta"])
+    globe_z.append(g["z"])
+
+# ----- Print to verify -----
+print("Turret IDs:", turret_ids)
+print("Turret r:", turret_r)
+print("Turret theta:", turret_theta)
+
+print("Globe r:", globe_r)
+print("Globe theta:", globe_theta)
+print("Globe z:", globe_z)
+
+
+
 
 
 class Turrets:
     def __init__(self, ident, rval, theta_deg, zval):
         self.ident = ident
-        self.rval = rval
+        self.rval = rval 
         self.theta_deg = theta_deg   # store degrees for readability
         self.theta_rad = math.radians(theta_deg)  # also store radians
         self.zval = zval
@@ -23,15 +68,36 @@ class NewTurrets:
         self.z = z
 
 #Turret stuff 
-ident_example = [1, 2, 3, 4, 5]
-rval_example = [3, 3, 3, 3, 3]
-theta_example = [75, 45, 180, 135, 270]  # degrees
+ident_example = turret_ids
+rval_example = []
+for i in range(len(turret_r)):
+    x = turret_r[i] / 100
+    rval_example.append(x)
+
+
+theta_example = []
+for i in range(len(turret_theta)):
+    x = math.degrees(turret_theta[i])
+    theta_example.append(x)
+  # degrees
 
 
 #Globe stuff - gonna pretend theyre turrets just at a different z 
-globe_r_example = [3, 3, 3, 3, 3]
-globe_theta_example = [45, 138, 220, 340, 89]
-globe_z_example = [4, 1, 5, 3, 1]
+globe_r_example = []
+for i in range(len(globe_r)): 
+    x = globe_r[i] / 100
+    globe_r_example.append(x) # changing into meters
+
+
+globe_theta_example = []
+for i in range(len(globe_theta)):
+    x = math.degrees(globe_theta[i]) 
+    globe_theta_example.append(x)
+    
+globe_z_example = [] 
+for i in range(len(globe_z)): 
+    x = globe_z[i] / 100
+    globe_z_example.append(x)
 
 
 
@@ -44,7 +110,7 @@ for i in range(len(ident_example)):
     turrets.append(new_turret)
 
 for g in range(len(globe_theta_example)): 
-    globe = Turrets(1000, 3, globe_theta_example[g], globe_z_example[g])
+    globe = Turrets(1000, globe_r_example[g], globe_theta_example[g], globe_z_example[g])
     turrets.append(globe)
 
 # Print polar data
@@ -122,11 +188,15 @@ print(xymovement)
 
 zholder = []
 for obj in cartesian_turrets: 
-    dis = math.sqrt((obj.x**2) + (obj.y**2))
-    angle = math.degrees(math.atan(obj.z / dis))
-    zholder.append(angle)
+    if obj.y > 0.0:
+        dis = math.sqrt((obj.x**2) + (obj.y**2))
+        angle = math.degrees(math.atan(obj.z / dis))
+        zholder.append(angle)
 
 zholder.insert(0, curr_pos)
+
+print(zholder) 
+
 zmovement = []
 
 for i in range(len(zholder) - 1):
@@ -177,5 +247,7 @@ try:
 
 except KeyboardInterrupt:
     print("\nStopped by user")
+    GPIO.cleanup()
 except Exception as e:
     print(e)
+    GPIO.cleanup()
