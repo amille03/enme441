@@ -2,6 +2,9 @@
 import http.server
 import socketserver
 import urllib.parse
+import threading
+
+import 2motors  # <-- imports the file created above
 
 PORT = 8000
 
@@ -9,32 +12,34 @@ PAGE = """
 <!DOCTYPE html>
 <html>
 <head>
-<title>Test Web UI</title>
+<title>ENME441 Turret UI</title>
 <style>
 body { font-family: Arial; max-width: 600px; margin:auto; }
-fieldset { margin:20px 0; padding:15px; }
+fieldset { padding: 15px; margin-top: 20px; }
+label { display:inline-block; width:130px; }
+button { padding: 8px 20px; }
 </style>
 </head>
 <body>
 
-<h1>Test Web Interface</h1>
+<h1>ENME441 Turret Control</h1>
 
+<!-- Laser -->
 <fieldset>
-<legend>Laser Test</legend>
+<legend>Laser Control</legend>
 <form method="POST" action="/laser">
-<button name="state" value="on">Laser ON</button>
-<button name="state" value="off">Laser OFF</button>
+<button name="cmd" value="on">Laser ON</button>
+<button name="cmd" value="off">Laser OFF</button>
 </form>
 </fieldset>
 
+<!-- Run Motors -->
 <fieldset>
-<legend>Motor Test</legend>
-<form method="POST" action="/move">
-<label>Turret (deg):</label>
-<input name="turret" type="number"><br><br>
-<label>Globe (deg):</label>
-<input name="globe" type="number"><br><br>
-<button>Submit Move</button>
+<legend>Run Motor Sequence</legend>
+<form method="POST" action="/run">
+<label>Enter Turret ID:</label>
+<input type="number" name="tid" required><br><br>
+<button>Run Sequence</button>
 </form>
 </fieldset>
 
@@ -45,31 +50,41 @@ fieldset { margin:20px 0; padding:15px; }
 class Handler(http.server.BaseHTTPRequestHandler):
 
     def send_html(self, html):
-        html_bytes = html.encode()
+        data = html.encode()
         self.send_response(200)
-        self.send_header("Content-Type","text/html")
-        self.send_header("Content-Length", str(len(html_bytes)))
+        self.send_header("Content-Type", "text/html")
+        self.send_header("Content-Length", str(len(data)))
         self.end_headers()
-        self.wfile.write(html_bytes)
+        self.wfile.write(data)
 
     def do_GET(self):
-        print("[SERVER] GET request received")
         self.send_html(PAGE)
 
     def do_POST(self):
-        length = int(self.headers.get("Content-Length", 0))
-        data = self.rfile.read(length).decode()
-        params = urllib.parse.parse_qs(data)
+        length = int(self.headers.get("Content-Length",0))
+        raw = self.rfile.read(length).decode()
+        params = urllib.parse.parse_qs(raw)
 
-        print("\n===== POST Received =====")
-        print("Path:", self.path)
-        print("Parameters:", params)
-        print("=========================\n")
+        # ---- LASER ----
+        if self.path == "/laser":
+            cmd = params.get("cmd",["off"])[0]
+            if cmd == "on":
+                motors.laser_on()
+            else:
+                motors.laser_off()
+            return self.send_html(PAGE)
 
-        self.send_html(PAGE)
+        # ---- RUN SEQUENCE ----
+        if self.path == "/run":
+            tid = int(params["tid"][0])
 
-# ---- MAIN SERVER START ----
-with socketserver.TCPServer(("", PORT), Handler) as server:
-    print(f"Web UI running at: http://<your_pi_ip>:{PORT}")
-    print("Press CTRL+C to stop the server.\n")
+            def worker():
+                motors.run_sequence(tid)
+
+            threading.Thread(target=worker, daemon=True).start()
+            return self.send_html(PAGE)
+
+
+with socketserver.TCPServer(("",PORT),Handler) as server:
+    print(f"Web UI running at: http://<your-pi-ip>:{PORT}")
     server.serve_forever()
