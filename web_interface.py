@@ -3,43 +3,72 @@ import http.server
 import socketserver
 import urllib.parse
 import threading
+import time
 
-import turretmotors   # <-- Your motor code module
+# -------------------- HARDWARE SETUP --------------------
+from RPi import GPIO
+from shifter import Shifter
+from stepper_class_shiftregister_multiprocessing import Stepper
+import multiprocessing
 
-PORT = 8000
+GPIO.setwarnings(False)
+GPIO.setmode(GPIO.BCM)
+
+# Shared shift register
+s = Shifter(data=17, clock=27, latch=22)
+
+# Lock for multiprocessing-safe updates
+lock = multiprocessing.Lock()
+
+# Two motors on the same shift register
+# m1 is on Qe–Qh
+# m2 is on Qa–Qd
+m1 = Stepper(s, lock)
+m2 = Stepper(s, lock)
+
+# Start with both motors zeroed
+m1.zero()
+m2.zero()
+
+print("[SERVER] Motors initialized and zeroed.")
+
+
+# -------------------- HTML INTERFACE --------------------
 
 PAGE = """
 <!DOCTYPE html>
 <html>
 <head>
-<title>ENME441 Turret Control</title>
+<title>Motor Control Interface</title>
 <style>
-body { font-family: Arial; max-width: 600px; margin: auto; }
+body { font-family: Arial; max-width: 600px; margin:auto; }
 fieldset { padding: 15px; margin-top: 20px; }
-label { display:inline-block; width: 130px; }
-button { padding: 8px 20px; margin-top: 10px; }
+label { display:inline-block; width:140px; margin-bottom:6px; }
+button { padding: 7px 18px; margin-top:10px; }
+input[type=number] { width:100px; }
 </style>
 </head>
 <body>
 
-<h1>ENME441 Turret Control</h1>
+<h1>Manual Motor Control</h1>
 
-<!-- LASER -->
 <fieldset>
-<legend>Laser Control</legend>
-<form method="POST" action="/laser">
-<button name="cmd" value="on">Laser ON</button>
-<button name="cmd" value="off">Laser OFF</button>
+<legend>Motor 1 (Turret)</legend>
+<form method="POST" action="/m1">
+<label>Rotate degrees:</label>
+<input name="deg" type="number" step="0.1"><br><br>
+<button name="cmd" value="rotate">Rotate</button>
+<button name="cmd" value="zero">Zero Motor 1</button>
 </form>
 </fieldset>
 
-<!-- RUN SEQUENCE -->
 <fieldset>
-<legend>Run Motor Sequence</legend>
-<form method="POST" action="/run">
-<label>Turret ID:</label>
-<input type="number" name="tid" required><br><br>
-<button>Run Sequence</button>
+<legend>Motor 2 (Globe)</legend>
+<form method="POST" action="/m2">
+<label>Rotate degrees:</label>
+<input name="deg" type="number" step="0.1"><br><br>
+<button name="cmd" value="rotate">Rotate</button>
+<button name="cmd" value="zero">Zero Motor 2</button>
 </form>
 </fieldset>
 
@@ -47,46 +76,58 @@ button { padding: 8px 20px; margin-top: 10px; }
 </html>
 """
 
+
+# -------------------- REQUEST HANDLER --------------------
+
 class Handler(http.server.BaseHTTPRequestHandler):
 
     def send_html(self, html):
-        data = html.encode()
+        encoded = html.encode()
         self.send_response(200)
-        self.send_header("Content-Type","text/html")
-        self.send_header("Content-Length",str(len(data)))
+        self.send_header("Content-Type", "text/html")
+        self.send_header("Content-Length", str(len(encoded)))
         self.end_headers()
-        self.wfile.write(data)
+        self.wfile.write(encoded)
 
     def do_GET(self):
+        print("[SERVER] GET request")
         self.send_html(PAGE)
 
     def do_POST(self):
-        length = int(self.headers.get("Content-Length",0))
+        length = int(self.headers.get("Content-Length", 0))
         raw = self.rfile.read(length).decode()
         params = urllib.parse.parse_qs(raw)
 
-        # ===== LASER =====
-        if self.path == "/laser":
-            cmd = params.get("cmd",["off"])[0]
-            if cmd == "on":
-                turretmotors.laser_on()
-            else:
-                turretmotors.laser_off()
-            return self.send_html(PAGE)
+        # Motor 1 actions
+        if self.path == "/m1":
+            cmd = params.get("cmd", [""])[0]
+            if cmd == "rotate":
+                deg = float(params["deg"][0])
+                print(f"[M1] Rotating {deg} degrees")
+                threading.Thread(target=m1.rotate, args=(deg,), daemon=True).start()
+            elif cmd == "zero":
+                print("[M1] Zeroing motor")
+                threading.Thread(target=m1.zero, daemon=True).start()
 
-        # ===== RUN SEQUENCE =====
-        if self.path == "/run":
-            tid = int(params["tid"][0])
+        # Motor 2 actions
+        if self.path == "/m2":
+            cmd = params.get("cmd", [""])[0]
+            if cmd == "rotate":
+                deg = float(params["deg"][0])
+                print(f"[M2] Rotating {deg} degrees")
+                threading.Thread(target=m2.rotate, args=(deg,), daemon=True).start()
+            elif cmd == "zero":
+                print("[M2] Zeroing motor")
+                threading.Thread(target=m2.zero, daemon=True).start()
 
-            # run in background
-            def worker():
-                turretmotors.run_sequence(tid)
-
-            threading.Thread(target=worker, daemon=True).start()
-            return self.send_html(PAGE)
+        # Return page to user
+        self.send_html(PAGE)
 
 
-# ===== START SERVER FIRST =====
+# -------------------- MAIN SERVER --------------------
+
+PORT = 8000
+
 with socketserver.TCPServer(("", PORT), Handler) as server:
-    print(f"\nWeb UI running at: http://<your-pi-ip>:{PORT}\n")
+    print(f"[SERVER] Web UI running at: http://<your_pi_ip>:{PORT}")
     server.serve_forever()
