@@ -169,13 +169,13 @@ def main():
                             print("[Python] Saved experiment_data to experiment_data.csv")
 
                             # === NEW: plot voltage vs time ===
-                            plt.figure()
-                            plt.plot(times, volts, linewidth=0.5)          # times: numeric timestamps, volts: numeric voltages
-                            plt.xlabel("Time")              # label as appropriate: seconds, ms, etc.
-                            plt.ylabel("Voltage (V)")
-                            plt.title("Vibration Voltage vs Time")
-                            plt.grid(True)
-                            plt.show()                      # blocks until you close the window
+                            #plt.figure()
+                            #plt.plot(times, volts, linewidth=0.5)          # times: numeric timestamps, volts: numeric voltages
+                            #plt.xlabel("Time")              # label as appropriate: seconds, ms, etc.
+                            #plt.ylabel("Voltage (V)")
+                            #plt.title("Vibration Voltage vs Time")
+                            ##plt.grid(True)
+                            #plt.show()                      # blocks until you close the window
                             # If you want to keep collecting data after closing the plot,
                             # this is fine: the loop will continue.
 
