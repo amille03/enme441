@@ -1,235 +1,209 @@
-# import time
-# import board
-# import neopixel
-
-# pixel = neopixel.NeoPixel(board.NEOPIXEL, 1)
-
-# pixel.brightness = 0.3
-
-# while True:
-#     pixel.fill((255, 0, 0))
-#     time.sleep(0.5)
-#     pixel.fill((0, 255, 0))
-#     time.sleep(0.5)
-#     pixel.fill((0, 0, 255))
-#     time.sleep(0.5)
-
-
-
-# import time
-# import board
-# import busio
-
-# # List of potential I2C busses
-# ALL_I2C = ("board.I2C()", "board.STEMMA_I2C()", "busio.I2C(board.GP1, board.GP0)")
-
-# # Determine which busses are valid
-# found_i2c = []
-# for name in ALL_I2C:
-#     try:
-#         print("Checking {}...".format(name), end="")
-#         bus = eval(name)
-#         bus.unlock()
-#         found_i2c.append((name, bus))
-#         print("ADDED.")
-#     except Exception as e:
-#         print("SKIPPED:", e)
-
-# # Scan valid busses
-# if len(found_i2c):
-#     print("-" * 40)
-#     print("I2C SCAN")
-#     print("-" * 40)
-#     while True:
-#         for bus_info in found_i2c:
-#             name = bus_info[0]
-#             bus = bus_info[1]
-
-#             while not bus.try_lock():
-#                 pass
-
-#             print(
-#                 name,
-#                 "addresses found:",
-#                 [hex(device_address) for device_address in bus.scan()],
-#             )
-
-#             bus.unlock()
-
-#         time.sleep(2)
-# else:
-#     print("No valid I2C bus found.")
-
-
-
-# """CircuitPython I2C Device Address Scan"""
-# # If you run this and it seems to hang, try manually unlocking
-# # your I2C bus from the REPL with
-# #  >>> import board
-# #  >>> board.I2C().unlock()
-
-# import time
-# import board
-
-# # To use default I2C bus (most boards)
-# i2c = board.I2C()  # uses board.SCL and board.SDA
-# # i2c = board.STEMMA_I2C()  # For using the built-in STEMMA QT connector on a microcontroller
-
-# # To create I2C bus on specific pins
-# # import busio
-# # i2c = busio.I2C(board.SCL1, board.SDA1)  # QT Py RP2040 STEMMA connector
-# # i2c = busio.I2C(board.GP1, board.GP0)    # Pi Pico RP2040
-
-# while not i2c.try_lock():
-#     pass
-
-# try:
-#     while True:
-#         print(
-#             "I2C addresses found:",
-#             [hex(device_address) for device_address in i2c.scan()],
-#         )
-#         time.sleep(2)
-
-# finally:  # unlock the i2c bus when ctrl-c'ing out of the loop
-#     i2c.unlock()
-
-
-
-# import time
-# import board
-# import adafruit_bno055
-
-# i2c = board.I2C()  # uses board.SCL and board.SDA
-# sensor = adafruit_bno055.BNO055_I2C(i2c)
-
-# last_val = 0xFFFF
-
-# def temperature():
-#     global last_val  # noqa: PLW0603
-#     result = sensor.temperature
-#     if abs(result - last_val) == 128:
-#         result = sensor.temperature
-#         if abs(result - last_val) == 128:
-#             return 0b00111111 & result
-#     last_val = result
-#     return result
-
-
-# while True:
-#     print(f"Temperature: {sensor.temperature} degrees C")
-#     """
-#     print(
-#         "Temperature: {} degrees C".format(temperature())
-#     )  # Uncomment if using a Raspberry Pi
-#     """
-#     print(f"Accelerometer (m/s^2): {sensor.acceleration}")
-#     print(f"Magnetometer (microteslas): {sensor.magnetic}")
-#     print(f"Gyroscope (rad/sec): {sensor.gyro}")
-#     print(f"Euler angle: {sensor.euler}")
-#     print(f"Quaternion: {sensor.quaternion}")
-#     print(f"Linear acceleration (m/s^2): {sensor.linear_acceleration}")
-#     print(f"Gravity (m/s^2): {sensor.gravity}")
-#     print()
-
-#     time.sleep(1)
-
-
-
-# import time
-# import board
-# import adafruit_bno055
-# import ulab
-# import gc
-
-# gc.collect()
-# free_memory = gc.mem_free()
-# print("Available memory: {} bytes".format(free_memory))
-# alloc_memory = gc.mem_alloc()
-# print("Allocated memory: {} bytes".format(alloc_memory))
-
-# print("\nCreating array. . .\n")
-
-# # 76896 total (allegedly)
-# test = ulab.numpy.zeros([32000,1], dtype=ulab.numpy.float)
-
-# gc.collect()
-# free_memory = gc.mem_free()
-# print("Available memory: {} bytes".format(free_memory))
-# alloc_memory = gc.mem_alloc()
-# print("Allocated memory: {} bytes".format(alloc_memory))
-
-
-
+import serial
 import time
-import board
-import adafruit_bno055
-import ulab
-import neopixel
-from analogio import AnalogIn
+import msvcrt  # Windows-only
+import numpy as np
+import matplotlib.pyplot as plt   # <<< NEW
 
-""""
-pixel = neopixel.NeoPixel(board.NEOPIXEL, 1)
-pixel.brightness = 0.3
+PORT = "COM4"
+BAUD = 115200
 
-i2c = board.I2C()  # uses board.SCL and board.SDA
-sensor = adafruit_bno055.BNO055_I2C(i2c)
-
-i = 0
-L = 32000
-rows = 5
-L_adj = int(L / rows)
-data = ulab.numpy.zeros([L_adj,rows], dtype=ulab.numpy.float)
-wait = 0.01
-
-print("Running data storage duration test. . .")
-start = time.monotonic()
-while i < L_adj:
-    # print(f"Accelerometer (m/s^2): {sensor.acceleration}")
-    # print(f"Magnetometer (microteslas): {sensor.magnetic}")
-    # print(f"Gyroscope (rad/sec): {sensor.gyro}")
-    # print(f"Euler angle: {sensor.euler}")
-    # print(f"Quaternion: {sensor.quaternion}")
-    # print(f"Linear acceleration (m/s^2): {sensor.linear_acceleration}")
-    # print(f"Gravity (m/s^2): {sensor.gravity}")
-    # print()
-
-    data[i,0] = time.monotonic() - start
-    data[i,1] = sensor.quaternion[0]
-    data[i,2] = sensor.quaternion[1]
-    data[i,3] = sensor.quaternion[2]
-    data[i,4] = sensor.quaternion[3]
-
-    if i % 1000 == 0:
-        print(f"{i} of {L_adj}")
-    i += 1
-
-    time.sleep(wait)
-
-end = time.monotonic()
-print(f"Done. {1/wait}Hz; {end - start}s total duration")
-
-filename = "data.csv"
-
-try:
-    with open(filename, 'w') as f:
-        # f.write("column1,column2,column3\n")
-        for row in data:
-            row_as_string = ",".join(map(str, row))
-            f.write(row_as_string + "\n")
-except OSError as e:  # Typically when the filesystem isn't writeable...
-    delay = 0.5  # ...blink the LED every half second.
-    if e.args[0] == 28:  # If the file system is full...
-        delay = 0.25  # ...blink the LED faster!
+def open_serial_blocking(port=PORT, baud=BAUD, timeout=1):
+    """Keep trying to open the serial port until it is usable."""
     while True:
-        pixel.value = not pixel.value
-        time.sleep(delay)
-"""
-analog_in = AnalogIn(board.A0)
-def get_voltage(pin):
-    return (pin.value * 3.3) / 65536
+        try:
+            ser = serial.Serial(port, baudrate=baud, timeout=timeout)
+            # Poke driver; if device isn't ready this will throw.
+            _ = ser.in_waiting
+            ser.reset_input_buffer()
+            print(f"[Python] Opened {port}")
+            return ser
+        except serial.SerialException as e:
+            print(f"[Python] Waiting for {port} to come back: {e}")
+            try:
+                ser.close()
+            except Exception:
+                pass
+            time.sleep(0.5)
 
+def send_reset_and_reopen(ser):
+    """Tell the Feather to reset, close old handle, and return a fresh Serial."""
+    try:
+        ser.write(b"RESET\n")
+        ser.flush()
+    except serial.SerialException as e:
+        print(f"[Python] Error while sending RESET: {e}")
 
-while True:
-    print((get_voltage(analog_in),))
-    time.sleep(0.1)
+    try:
+        ser.close()
+    except Exception:
+        pass
+
+    # Give the RP2040 time to reboot and re-enumerate
+    time.sleep(1.5)
+    new_ser = open_serial_blocking()
+    time.sleep(2.0)  # let setup() finish
+    print("[Python] Feather reset complete, continuing...\n")
+    return new_ser
+
+def read_dump(ser):
+    """
+    Called right after we've seen 'START_DUMP:'.
+    Reads lines until 'END_DUMP' and returns:
+
+      experiment_data: 3xN float array [times; raw_adc; voltage]
+      times_str: list of time strings (exactly as sent by Feather)
+      vibes_str: list of raw ADC strings (exactly as sent by Feather)
+      volts: 1D float array of voltages
+    """
+    times_str = []
+    vibes_str = []
+    times_float = []
+    vibes_float = []
+
+    while True:
+        raw = ser.readline()
+        if not raw:
+            print("[Python] Dump read timeout / no data.")
+            break
+
+        line = raw.decode("utf-8", errors="ignore").strip()
+
+        if line == "END_DUMP":
+            # Clean end of dump
+            break
+
+        if not line:
+            continue  # skip empty lines
+
+        # Assuming lines like: "\t123.45\t0.987"
+        parts = line.split()
+        if len(parts) < 2:
+            print(f"[Python] Skipping malformed dump line: {line!r}")
+            continue
+
+        # Preserve exact string tokens as sent by the Feather
+        t_str = parts[0]
+        v_str = parts[1]
+        times_str.append(t_str)
+        vibes_str.append(v_str)
+
+        # Also keep numeric versions for math / voltage conversion
+        try:
+            t_val = float(t_str)
+            v_val = float(v_str)
+        except ValueError:
+            print(f"[Python] Non-numeric dump line: {line!r}")
+            # Don't add to numeric arrays if it's not numeric
+            continue
+
+        times_float.append(t_val)
+        vibes_float.append(v_val)
+
+    if not times_float:
+        print("[Python] Warning: saw 'START_DUMP:' but no usable numeric data.")
+        return None
+
+    times_arr = np.array(times_float)
+    vibes_arr = np.array(vibes_float)
+
+    # Convert raw ADC to voltage: (analog_in.value * 3.3) / 65536
+    volts = (vibes_arr * 3.3) / 65536.0
+
+    # 3 x N data array: [time; raw_adc; voltage]
+    experiment_data = np.vstack((times_arr, vibes_arr, volts))
+    print(f"[Python] Captured dump with shape {experiment_data.shape}")
+    return experiment_data, times_str, vibes_str, volts
+
+def main():
+    ser = open_serial_blocking()
+    time.sleep(2.0)  # initial setup time
+
+    experiment_data = None  # will hold latest 3xN dump
+
+    print("Listening to Feather. SPACE/ENTER = reset; Ctrl+C = quit.")
+
+    try:
+        while True:
+            # ---- Keyboard handling for reset ----
+            if msvcrt.kbhit():
+                key = msvcrt.getwch()
+                if key in (" ", "\r", "\n"):
+                    print("\n[Python] Reset key pressed, resetting Feather...")
+                    ser = send_reset_and_reopen(ser)
+                    continue
+
+            # ---- Serial reading ----
+            try:
+                if ser.in_waiting > 0:
+                    raw = ser.readline()
+                    line = raw.decode("utf-8", errors="ignore").strip()
+
+                    if line == "START_DUMP:":
+                        print("[Python] Detected START_DUMP header, reading dump...")
+                        dump_result = read_dump(ser)
+
+                        if dump_result is not None:
+                            experiment_data, times_str, vibes_str, volts = dump_result
+
+                            # Example: print array (numeric)
+                            print("Experiment data array (rows: time, raw_adc, voltage):")
+                            print(experiment_data)
+
+                            # Quick stats based on numeric data (optional)
+                            times = experiment_data[0, :]
+                            vibes = experiment_data[1, :]
+
+                            print(f"Samples: {experiment_data.shape[1]}")
+                            print(f"Time range: {times[0]} -> {times[-1]}")
+                            print(f"Raw ADC min/max: {vibes.min()} / {vibes.max()}")
+
+                            # === Save to CSV ===
+                            # First two columns are EXACT strings from the Feather.
+                            # Third column is the computed voltage.
+                            with open("experiment_data.csv", "w", newline="") as f:
+                                f.write("time,raw_adc,voltage\n")
+                                for t_str, v_str, v_volt in zip(times_str, vibes_str, volts):
+                                    # t_str and v_str are exactly as received from the Feather
+                                    f.write(f"{t_str},{v_str},{v_volt}\n")
+
+                            print("[Python] Saved experiment_data to experiment_data.csv")
+
+                            # === NEW: plot voltage vs time ===
+                            plt.figure()
+                            plt.plot(times, volts, linewidth=0.5)          # times: numeric timestamps, volts: numeric voltages
+                            plt.xlabel("Time")              # label as appropriate: seconds, ms, etc.
+                            plt.ylabel("Voltage (V)")
+                            plt.title("Vibration Voltage vs Time")
+                            plt.grid(True)
+                            plt.show()                      # blocks until you close the window
+                            # If you want to keep collecting data after closing the plot,
+                            # this is fine: the loop will continue.
+
+                        continue  # go back to top of loop
+
+                    # Normal non-dump output:
+                    print(f"[FEATHER]: {line}")
+
+            except serial.SerialException as e:
+                print(f"[Python] Serial error while reading: {e}")
+                print("[Python] Trying to reopen the port...")
+                ser = open_serial_blocking()
+                time.sleep(2.0)
+                continue
+
+            time.sleep(0.01)
+
+    except KeyboardInterrupt:
+        print("\nExiting program.")
+    finally:
+        try:
+            ser.close()
+        except Exception:
+            pass
+
+    if experiment_data is not None:
+        print("Final experiment_data:")
+        print(experiment_data)
+
+if __name__ == "__main__":
+    main()
