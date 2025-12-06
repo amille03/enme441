@@ -5,7 +5,7 @@ import matplotlib.animation as animation
 
 # --- 1. Configuration ---
 # !!! IMPORTANT: Replace with your microcontroller's serial port !!!
-SERIAL_PORT = COM3 
+SERIAL_PORT = "COM3" 
 BAUD_RATE = 115200
 
 # Lists to store the data for plotting
